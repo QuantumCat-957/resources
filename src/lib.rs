@@ -69,7 +69,7 @@
 //         }
 //     }
 // }
-#![feature(async_closure, associated_type_bounds, let_chains)]
+// #![feature(async_closure, associated_type_bounds, let_chains)]
 #![allow(unused, async_fn_in_trait)]
 pub use resource_macros;
 

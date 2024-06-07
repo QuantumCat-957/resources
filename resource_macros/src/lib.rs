@@ -1,6 +1,7 @@
-#![feature(let_chains, iter_intersperse)]
+// #![feature(let_chains, iter_intersperse)]
 extern crate proc_macro;
 
+use itertools::Itertools;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput, Error};
@@ -67,25 +68,52 @@ impl DeriveResource {
             .map(|(n, ty)| (format_ident!("{n}"), format_ident!("{ty}")))
             .collect();
 
-        let fields: Vec<Field> = if let syn::Data::Struct(item_struct) = input.data
-        && let syn::Fields::Named(fields) = item_struct.fields {
-            fields.named.iter().filter_map(|field| {
-                let ident = field.ident.as_ref()?;
-                let field_attr =  attributes::field_attr::Resource::try_from_attributes(&field.attrs).ok()?;
-                let (name, typ) =
-                if let Some(attr) = field_attr
-                && let Some(name) = attr.name {
-                    let name = parse_lit_string(&name).unwrap().to_string();
-                    let typ = attr.typ.and_then(|t| parse_lit_string(&t).ok()).map(|t| t.to_string());
-                    (name, typ)
-                } else {
-                    let original_field_name = trim_starting_raw_identifier(ident);
-                    use heck::ToSnakeCase as _;
-                    let name = original_field_name.as_str().to_snake_case();
-                    (name, None)
-                };
-                Some(Field { name, typ, ident: ident.clone() })
-            }).collect()
+        let fields: Vec<Field> = if let syn::Data::Struct(item_struct) = input.data {
+            if let syn::Fields::Named(fields) = item_struct.fields {
+                fields
+                    .named
+                    .iter()
+                    .filter_map(|field| {
+                        let ident = field.ident.as_ref()?;
+                        let field_attr =
+                            attributes::field_attr::Resource::try_from_attributes(&field.attrs)
+                                .ok()?;
+
+                        let (name, typ) = match field_attr {
+                            Some(attr) => match attr.name {
+                                Some(name) => {
+                                    let name = parse_lit_string(&name).unwrap().to_string();
+                                    let typ = attr
+                                        .typ
+                                        .and_then(|t| parse_lit_string(&t).ok())
+                                        .map(|t| t.to_string());
+                                    (name, typ)
+                                }
+                                None => {
+                                    let original_field_name = trim_starting_raw_identifier(ident);
+                                    use heck::ToSnakeCase as _;
+                                    let name = original_field_name.as_str().to_snake_case();
+                                    (name, None)
+                                }
+                            },
+                            None => {
+                                let original_field_name = trim_starting_raw_identifier(ident);
+                                use heck::ToSnakeCase as _;
+                                let name = original_field_name.as_str().to_snake_case();
+                                (name, None)
+                            }
+                        };
+
+                        Some(Field {
+                            name,
+                            typ,
+                            ident: ident.clone(),
+                        })
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
         } else {
             vec![]
         };
@@ -124,12 +152,13 @@ impl DeriveResource {
             })
             .collect();
 
-        let upsert_set: String = fields
-            .iter()
-            .map(|f| format!("{} = EXCLUDED.{}", f.name, f.name))
-            .intersperse(", ".to_string())
-            .collect();
-
+        let upsert_set: String = Itertools::intersperse(
+            fields
+                .iter()
+                .map(|f| format!("{} = EXCLUDED.{}", f.name, f.name)),
+            ", ".to_string(),
+        )
+        .collect();
         let mut fields = fields.clone();
 
         pk_fields.append(&mut fields);
@@ -141,45 +170,43 @@ impl DeriveResource {
             pg_table_name.clone()
         };
 
-        let select: String = fields
-            .iter()
-            .map(|f| f.name.to_string())
-            .intersperse(", ".to_string())
-            .collect();
+        let select: String =
+            Itertools::intersperse(fields.iter().map(|f| f.name.to_string()), ", ".to_string())
+                .collect();
+        let pg_values_iter = fields.iter().enumerate().map(|(i, f)| {
+            let mut v = format!("${}", i + 1);
+            if let Some(typ) = &f.typ {
+                let typ = format!("::{typ}");
+                let typ = typ.as_str();
+                v.push_str(typ);
+            };
+            v
+        });
+        let pg_values: String = Itertools::intersperse(pg_values_iter, ", ".to_string()).collect();
 
-        let pg_values: String = fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                let mut v = format!("${}", i + 1);
-                if let Some(typ) = &f.typ {
-                    let typ = format!("::{typ}");
-                    let typ = typ.as_str();
-                    v.push_str(typ);
-                };
-                v
-            })
-            .intersperse(", ".to_string())
-            .collect();
-        let sqlite_values: String = fields
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("${}", i + 1))
-            .intersperse(", ".to_string())
-            .collect();
+        let sqlite_values: String = Itertools::intersperse(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("${}", i + 1)),
+            ", ".to_string(),
+        )
+        .collect();
 
-        let del: String = primary_keys
-            .iter()
-            .enumerate()
-            .map(|(i, (f, _ty))| format!("{f} =${}", i + 1))
-            .intersperse(" AND ".to_string())
-            .collect();
+        let del: String = Itertools::intersperse(
+            primary_keys
+                .iter()
+                .enumerate()
+                .map(|(i, (f, _ty))| format!("{f} =${}", i + 1)),
+            " AND ".to_string(),
+        )
+        .collect();
 
-        let pkey_constraint: String = primary_keys
-            .iter()
-            .map(|(f, _ty)| format!("{f}"))
-            .intersperse(", ".to_string())
-            .collect();
+        let pkey_constraint: String = Itertools::intersperse(
+            primary_keys.iter().map(|(f, _ty)| format!("{f}")),
+            ", ".to_string(),
+        )
+        .collect();
 
         let pg_insert = format!("INSERT INTO {pg_table_name} ( {select} ) VALUES ( {pg_values} )");
         let sqlite_insert =

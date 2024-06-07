@@ -18,3 +18,4 @@ quote = { version = "1", default-features = false }
 heck = { version = "0.4", default-features = false }
 proc-macro2 = { version = "1", default-features = false }
 sqlx = { version = "0.7", features = ["json", "runtime-tokio-rustls", "postgres", "sqlite"] }
+itertools = "0.13.0"
